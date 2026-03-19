@@ -32,7 +32,9 @@ services:
       - VIDEO_SEGMENT_DURATION=10000  # milliseconds (10 seconds)
       - WEBHOOK_TIMEOUT=5  # seconds
       - API_TIMEOUT=30  # seconds
-      - GUNICORN_WORKERS=2
+      - LOG_LEVEL=INFO
+      # Must stay 1 — global state (syno_sid, arr_cam_move) is not shared between workers
+      - GUNICORN_WORKERS=1
       - GUNICORN_TIMEOUT=120
     
     # Volume mount for storing camera configuration and temp videos

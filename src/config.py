@@ -1,7 +1,6 @@
 """
-Configuration module for Synology Surveillance Station to Telegram bridge
-
-This module centralizes all configuration and constants used by the application.
+Configuration module for Synology Surveillance Station to Telegram bridge.
+All settings are read from environment variables.
 """
 
 import os
@@ -9,107 +8,76 @@ import sys
 import logging
 
 # ============================================================================
-# LOGGING CONFIGURATION
+# LOGGING
 # ============================================================================
 
-LOG_FORMAT = "%(asctime)s - [%(levelname)s] - %(name)s - (%(filename)s).%(funcName)s(%(lineno)d) - %(message)s"
-LOG_LEVEL = logging.DEBUG
+LOG_FORMAT = (
+    "%(asctime)s - [%(levelname)s] - %(name)s"
+    " - (%(filename)s).%(funcName)s(%(lineno)d) - %(message)s"
+)
+
+_log_level_str = os.environ.get("LOG_LEVEL", "INFO").upper()
+_LOG_LEVEL = getattr(logging, _log_level_str, logging.INFO)
 
 
-def setup_logger(name):
-    """Setup and return a logger instance
-
-    Args:
-        name: Logger name (typically __name__)
-
-    Returns:
-        logging.Logger: Configured logger instance
-    """
+def setup_logger(name: str) -> logging.Logger:
+    """Return a configured logger. Guard against duplicate handlers on reload."""
     logger = logging.getLogger(name)
-    handler = logging.StreamHandler(sys.stdout)
-    formatter = logging.Formatter(LOG_FORMAT)
-    handler.setFormatter(formatter)
-    logger.addHandler(handler)
-    logger.setLevel(LOG_LEVEL)
+    if not logger.handlers:
+        handler = logging.StreamHandler(sys.stdout)
+        handler.setFormatter(logging.Formatter(LOG_FORMAT))
+        logger.addHandler(handler)
+    logger.setLevel(_LOG_LEVEL)
     return logger
 
 
 # ============================================================================
-# ENVIRONMENT VARIABLES - REQUIRED
+# REQUIRED ENVIRONMENT VARIABLES
 # ============================================================================
 
+# SYNO_PORT is intentionally omitted: it has a sensible default (5000)
 REQUIRED_ENV_VARS = [
     "TG_CHAT_ID",
     "TG_TOKEN",
     "SYNO_IP",
-    "SYNO_PORT",
     "SYNO_LOGIN",
     "SYNO_PASS",
 ]
 
+# ============================================================================
+# OPTIONAL ENVIRONMENT VARIABLES (with defaults)
+# ============================================================================
+
 OPTIONAL_ENV_VARS = {
-    "SYNO_OTP": None,  # Two-factor authentication code
-    "CONFIG_FILE": "/bot/syno_cam_config.json",  # Camera config cache
-    "VIDEO_FILE": "/bot/temp.mp4",  # Temporary video file
-    "VIDEO_SEGMENT_DURATION": 10000,  # ms (10 seconds)
-    "WEBHOOK_TIMEOUT": 5,  # seconds - wait before fetching video
-    "API_TIMEOUT": 30,  # seconds - timeout for API requests
-    "GUNICORN_WORKERS": 2,  # Number of worker processes
-    "GUNICORN_TIMEOUT": 120,  # seconds
+    "SYNO_PORT": "5000",
+    "SYNO_OTP": None,
+    "CONFIG_FILE": "/bot/syno_cam_config.json",
+    "VIDEO_FILE": "/bot/temp.mp4",
+    "VIDEO_SEGMENT_DURATION": 10000,   # ms
+    "WEBHOOK_TIMEOUT": 5,              # seconds – wait before fetching video
+    "API_TIMEOUT": 30,                 # seconds – Synology request timeout
+    "LOG_LEVEL": "INFO",
+    "GUNICORN_WORKERS": 1,             # must stay 1 – state is in-process
+    "GUNICORN_TIMEOUT": 120,
 }
 
-
 # ============================================================================
-# TELEGRAM CONFIGURATION
+# TELEGRAM
 # ============================================================================
 
 TELEGRAM_CHAT_ID = os.environ.get("TG_CHAT_ID")
 TELEGRAM_TOKEN = os.environ.get("TG_TOKEN")
 
-
 # ============================================================================
-# SYNOLOGY CONFIGURATION
+# SYNOLOGY
 # ============================================================================
 
 SYNOLOGY_IP = os.environ.get("SYNO_IP")
-SYNOLOGY_PORT = os.environ.get("SYNO_PORT", "5000")
+SYNOLOGY_PORT = os.environ.get("SYNO_PORT", OPTIONAL_ENV_VARS["SYNO_PORT"])
 SYNOLOGY_LOGIN = os.environ.get("SYNO_LOGIN")
 SYNOLOGY_PASSWORD = os.environ.get("SYNO_PASS")
 SYNOLOGY_OTP = os.environ.get("SYNO_OTP")
 SYNOLOGY_URL = f"http://{SYNOLOGY_IP}:{SYNOLOGY_PORT}/webapi/entry.cgi"
-
-# Synology API endpoints
-SYNOLOGY_API = {
-    "auth": {
-        "api": "SYNO.API.Auth",
-        "version": "7",
-        "method": "login",
-        "session": "SurveillanceStation",
-        "format": "cookie12",
-    },
-    "camera_list": {
-        "api": "SYNO.SurveillanceStation.Camera",
-        "version": "9",
-        "method": "List",
-    },
-    "recording_list": {
-        "api": "SYNO.SurveillanceStation.Recording",
-        "version": "6",
-        "method": "List",
-    },
-    "recording_download": {
-        "api": "SYNO.SurveillanceStation.Recording",
-        "version": "6",
-        "method": "Download",
-        "playTimeMs": OPTIONAL_ENV_VARS["VIDEO_SEGMENT_DURATION"],
-    },
-    "camera_status": {
-        "api": "SYNO.SurveillanceStation.Camera.Status",
-        "version": "1",
-        "method": "OneTime",
-    },
-}
-
 
 # ============================================================================
 # FILE PATHS
@@ -118,28 +86,24 @@ SYNOLOGY_API = {
 CONFIG_FILE = os.environ.get("CONFIG_FILE", OPTIONAL_ENV_VARS["CONFIG_FILE"])
 VIDEO_FILE = os.environ.get("VIDEO_FILE", OPTIONAL_ENV_VARS["VIDEO_FILE"])
 
-
 # ============================================================================
-# TIMING AND BEHAVIOR
+# TIMING
 # ============================================================================
 
 VIDEO_SEGMENT_DURATION = int(
-    os.environ.get(
-        "VIDEO_SEGMENT_DURATION", OPTIONAL_ENV_VARS["VIDEO_SEGMENT_DURATION"]
-    )
-)  # milliseconds
+    os.environ.get("VIDEO_SEGMENT_DURATION", OPTIONAL_ENV_VARS["VIDEO_SEGMENT_DURATION"])
+)
 
 WEBHOOK_TIMEOUT = int(
     os.environ.get("WEBHOOK_TIMEOUT", OPTIONAL_ENV_VARS["WEBHOOK_TIMEOUT"])
-)  # seconds - wait before fetching video
+)
 
 API_TIMEOUT = int(
     os.environ.get("API_TIMEOUT", OPTIONAL_ENV_VARS["API_TIMEOUT"])
-)  # seconds - timeout for requests
-
+)
 
 # ============================================================================
-# GUNICORN CONFIGURATION
+# GUNICORN
 # ============================================================================
 
 GUNICORN_WORKERS = int(
@@ -150,9 +114,8 @@ GUNICORN_TIMEOUT = int(
     os.environ.get("GUNICORN_TIMEOUT", OPTIONAL_ENV_VARS["GUNICORN_TIMEOUT"])
 )
 
-
 # ============================================================================
-# DEPENDENCIES - AUTO INSTALL
+# DEPENDENCIES (for auto-install fallback via utils.py)
 # ============================================================================
 
 DEPENDENCIES = {
