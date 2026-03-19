@@ -2,80 +2,56 @@ version: "3.8"
 
 services:
   synology-to-telegram:
-    # Container name for easy reference
     container_name: synology-to-telegram
-    
-    # Automatically restart the container if it crashes
     restart: unless-stopped
-    
-    # Expose port for webhook from Synology Surveillance Station
+
     ports:
       - "7878:7878"
-    
-    # Load environment variables from .env file
+
+    # Credentials and required settings go in .env (see .env.example).
     env_file:
       - .env
-    
-    # Use .env file for individual variable overrides (if needed)
+
     environment:
-      # These will be overridden by .env file if set there
-      # Otherwise, uncomment and set values here
-      # - TG_CHAT_ID=
-      # - TG_TOKEN=
-      # - SYNO_IP=
-      # - SYNO_PORT=5000
-      # - SYNO_LOGIN=
-      # - SYNO_PASS=
-      # - SYNO_OTP=  # Optional: for two-factor authentication
+      # ── Optional overrides ───────────────────────────────────────────────
+      # Uncomment and set WEBHOOK_SECRET to protect the /webhookcam endpoint.
+      # Generate a value with: python3 -c "import secrets; print(secrets.token_hex(32))"
+      # Configure the same value in Synology → Action Rules → HTTP header:
+      #   X-Webhook-Token: <your-secret>
+      # - WEBHOOK_SECRET=
+
       - CONFIG_FILE=/bot/syno_cam_config.json
       - VIDEO_FILE=/bot/temp.mp4
-      - VIDEO_SEGMENT_DURATION=10000  # milliseconds (10 seconds)
-      - WEBHOOK_TIMEOUT=5  # seconds
-      - API_TIMEOUT=30  # seconds
+      - VIDEO_SEGMENT_DURATION=10000   # milliseconds (10 s per segment)
+      - WEBHOOK_TIMEOUT=5              # seconds to wait before fetching video
+      - API_TIMEOUT=30                 # seconds — Synology JSON API timeout
+      - VIDEO_DOWNLOAD_TIMEOUT=90      # seconds — binary video download timeout
       - LOG_LEVEL=INFO
-      # Must stay 1 — global state (syno_sid, arr_cam_move) is not shared between workers
+      # workers must stay 1 — in-process state is not fork-safe
       - GUNICORN_WORKERS=1
       - GUNICORN_TIMEOUT=120
-    
-    # Volume mount for storing camera configuration and temp videos
+
     volumes:
-      # Change /home/test to your desired path where config will be stored
-      # Format: /host/path:/container/path
+      # Camera config cache and per-camera temp video files are written here.
+      # Change the host path to a directory you control.
       - /home/test:/bot
-    
-    # Use locally built image instead of Docker Hub
-    # Build image locally: docker build -t synology-to-telegram:latest .
-    # Or uncomment 'image' line below to use Docker Hub
-    # image: striker72rus/ss_to_tg_video:latest
+
     build:
       context: .
       dockerfile: Dockerfile
-    
-    # Health check configuration
+    # To use the pre-built image from GHCR instead of building locally:
+    # image: ghcr.io/admake/synology-ss-video-to-telegram-with-prerecording:main
+
     healthcheck:
-      # Check if the webhook endpoint is responding
-      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost:7878/webhookcam"]
-      # Check every 30 seconds
+      test: ["CMD", "python3", "-c",
+             "import urllib.request, json, sys; r = urllib.request.urlopen('http://localhost:7878/health', timeout=5); sys.exit(0 if json.loads(r.read()).get('status') == 'ok' else 1)"]
       interval: 30s
-      # Wait up to 10 seconds for response
       timeout: 10s
-      # Start checking after 10 seconds
-      start_period: 10s
-      # Mark unhealthy after 3 failed checks
+      start_period: 20s
       retries: 3
-    
-    # Logging configuration
+
     logging:
       driver: "json-file"
       options:
         max-size: "10m"
         max-file: "3"
-    
-    # Network mode - use bridge (default)
-    # networks:
-    #   - synology-network
-
-# Optional: Define custom network if needed
-# networks:
-#   synology-network:
-#     driver: bridge

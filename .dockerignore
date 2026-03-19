@@ -1,0 +1,26 @@
+# Version control
+.git
+.gitignore
+.github
+
+# Secrets — must never end up in the image
+.env
+*.env
+
+# Python bytecode
+__pycache__
+*.py[cod]
+*.pyo
+*.pyd
+
+# Documentation and tooling
+*.md
+Makefile
+scripts/
+
+# Editor artifacts
+.vscode
+.idea
+*.swp
+*.swo
+*~

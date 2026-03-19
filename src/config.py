@@ -1,41 +1,41 @@
 """
-Configuration module for Synology Surveillance Station to Telegram bridge.
-All settings are read from environment variables.
+Configuration for Synology SS → Telegram bridge.
+All settings are read from environment variables at import time.
 """
 
+from __future__ import annotations
+
+import logging
 import os
 import sys
-import logging
 
-# ============================================================================
-# LOGGING
-# ============================================================================
+# ─── Logging ─────────────────────────────────────────────────────────────────
 
-LOG_FORMAT = (
-    "%(asctime)s - [%(levelname)s] - %(name)s"
-    " - (%(filename)s).%(funcName)s(%(lineno)d) - %(message)s"
+_LOG_LEVEL = getattr(
+    logging,
+    os.environ.get("LOG_LEVEL", "INFO").upper(),
+    logging.INFO,
 )
 
-_log_level_str = os.environ.get("LOG_LEVEL", "INFO").upper()
-_LOG_LEVEL = getattr(logging, _log_level_str, logging.INFO)
+_LOG_FORMAT = (
+    "%(asctime)s [%(levelname)s] %(name)s (%(filename)s:%(lineno)d) — %(message)s"
+)
 
 
 def setup_logger(name: str) -> logging.Logger:
-    """Return a configured logger. Guard against duplicate handlers on reload."""
+    """Return a configured logger, guarding against duplicate handlers on reload."""
     logger = logging.getLogger(name)
     if not logger.handlers:
         handler = logging.StreamHandler(sys.stdout)
-        handler.setFormatter(logging.Formatter(LOG_FORMAT))
+        handler.setFormatter(logging.Formatter(_LOG_FORMAT))
         logger.addHandler(handler)
     logger.setLevel(_LOG_LEVEL)
     return logger
 
 
-# ============================================================================
-# REQUIRED ENVIRONMENT VARIABLES
-# ============================================================================
+# ─── Required env vars ───────────────────────────────────────────────────────
 
-# SYNO_PORT is intentionally omitted: it has a sensible default (5000)
+# SYNO_PORT intentionally omitted — has a safe default (5000).
 REQUIRED_ENV_VARS = [
     "TG_CHAT_ID",
     "TG_TOKEN",
@@ -44,82 +44,48 @@ REQUIRED_ENV_VARS = [
     "SYNO_PASS",
 ]
 
-# ============================================================================
-# OPTIONAL ENVIRONMENT VARIABLES (with defaults)
-# ============================================================================
+# ─── Telegram ────────────────────────────────────────────────────────────────
 
-OPTIONAL_ENV_VARS = {
-    "SYNO_PORT": "5000",
-    "SYNO_OTP": None,
-    "CONFIG_FILE": "/bot/syno_cam_config.json",
-    "VIDEO_FILE": "/bot/temp.mp4",
-    "VIDEO_SEGMENT_DURATION": 10000,   # ms
-    "WEBHOOK_TIMEOUT": 5,              # seconds – wait before fetching video
-    "API_TIMEOUT": 30,                 # seconds – Synology request timeout
-    "LOG_LEVEL": "INFO",
-    "GUNICORN_WORKERS": 1,             # must stay 1 – state is in-process
-    "GUNICORN_TIMEOUT": 120,
-}
+TELEGRAM_CHAT_ID: str = os.environ.get("TG_CHAT_ID", "")
+TELEGRAM_TOKEN: str = os.environ.get("TG_TOKEN", "")
 
-# ============================================================================
-# TELEGRAM
-# ============================================================================
+# ─── Synology ────────────────────────────────────────────────────────────────
 
-TELEGRAM_CHAT_ID = os.environ.get("TG_CHAT_ID")
-TELEGRAM_TOKEN = os.environ.get("TG_TOKEN")
+_SYNO_IP: str = os.environ.get("SYNO_IP", "")
+_SYNO_PORT: str = os.environ.get("SYNO_PORT", "5000")
+SYNOLOGY_LOGIN: str = os.environ.get("SYNO_LOGIN", "")
+SYNOLOGY_PASSWORD: str = os.environ.get("SYNO_PASS", "")
+SYNOLOGY_OTP: str = os.environ.get("SYNO_OTP", "")
+SYNOLOGY_URL: str = f"http://{_SYNO_IP}:{_SYNO_PORT}/webapi/entry.cgi"
 
-# ============================================================================
-# SYNOLOGY
-# ============================================================================
+# ─── File paths ───────────────────────────────────────────────────────────────
 
-SYNOLOGY_IP = os.environ.get("SYNO_IP")
-SYNOLOGY_PORT = os.environ.get("SYNO_PORT", OPTIONAL_ENV_VARS["SYNO_PORT"])
-SYNOLOGY_LOGIN = os.environ.get("SYNO_LOGIN")
-SYNOLOGY_PASSWORD = os.environ.get("SYNO_PASS")
-SYNOLOGY_OTP = os.environ.get("SYNO_OTP")
-SYNOLOGY_URL = f"http://{SYNOLOGY_IP}:{SYNOLOGY_PORT}/webapi/entry.cgi"
+CONFIG_FILE: str = os.environ.get("CONFIG_FILE", "/bot/syno_cam_config.json")
 
-# ============================================================================
-# FILE PATHS
-# ============================================================================
+# Base path for per-camera temp video files.
+# Actual paths are derived as: stem_<cam_id>.suffix  (e.g. temp_1.mp4)
+VIDEO_FILE: str = os.environ.get("VIDEO_FILE", "/bot/temp.mp4")
 
-CONFIG_FILE = os.environ.get("CONFIG_FILE", OPTIONAL_ENV_VARS["CONFIG_FILE"])
-VIDEO_FILE = os.environ.get("VIDEO_FILE", OPTIONAL_ENV_VARS["VIDEO_FILE"])
+# ─── Timing ───────────────────────────────────────────────────────────────────
 
-# ============================================================================
-# TIMING
-# ============================================================================
+# Length of each downloaded video segment (milliseconds).
+VIDEO_SEGMENT_DURATION: int = int(os.environ.get("VIDEO_SEGMENT_DURATION", "10000"))
 
-VIDEO_SEGMENT_DURATION = int(
-    os.environ.get("VIDEO_SEGMENT_DURATION", OPTIONAL_ENV_VARS["VIDEO_SEGMENT_DURATION"])
-)
+# Seconds to wait after receiving the webhook before fetching the recording.
+# Gives Synology time to finish writing the file before we try to download it.
+WEBHOOK_TIMEOUT: int = int(os.environ.get("WEBHOOK_TIMEOUT", "5"))
 
-WEBHOOK_TIMEOUT = int(
-    os.environ.get("WEBHOOK_TIMEOUT", OPTIONAL_ENV_VARS["WEBHOOK_TIMEOUT"])
-)
+# Timeout for Synology JSON API calls (seconds).
+API_TIMEOUT: int = int(os.environ.get("API_TIMEOUT", "30"))
 
-API_TIMEOUT = int(
-    os.environ.get("API_TIMEOUT", OPTIONAL_ENV_VARS["API_TIMEOUT"])
-)
+# Timeout for streaming binary video downloads (seconds).
+# Larger than API_TIMEOUT because video files can be multi-MB over a LAN.
+VIDEO_DOWNLOAD_TIMEOUT: int = int(os.environ.get("VIDEO_DOWNLOAD_TIMEOUT", "90"))
 
-# ============================================================================
-# GUNICORN
-# ============================================================================
+# ─── Security ────────────────────────────────────────────────────────────────
 
-GUNICORN_WORKERS = int(
-    os.environ.get("GUNICORN_WORKERS", OPTIONAL_ENV_VARS["GUNICORN_WORKERS"])
-)
-
-GUNICORN_TIMEOUT = int(
-    os.environ.get("GUNICORN_TIMEOUT", OPTIONAL_ENV_VARS["GUNICORN_TIMEOUT"])
-)
-
-# ============================================================================
-# DEPENDENCIES (for auto-install fallback via utils.py)
-# ============================================================================
-
-DEPENDENCIES = {
-    "telebot": "pyTelegramBotAPI",
-    "flask": "flask",
-    "requests": "requests",
-}
+# Optional shared secret that protects the /webhookcam endpoint.
+# When set, every incoming webhook must supply the same value via the
+# X-Webhook-Token request header (or ?token= query parameter).
+# Generate with: python3 -c "import secrets; print(secrets.token_hex(32))"
+WEBHOOK_SECRET: str = os.environ.get("WEBHOOK_SECRET", "")

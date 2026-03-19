@@ -1,47 +1,70 @@
 # syntax=docker/dockerfile:1
 
-FROM python:alpine
+# ─── Stage 1: build dependencies ─────────────────────────────────────────────
+# This stage installs all Python packages into an isolated venv.
+# Build tools (gcc, musl-dev) stay here and never reach the final image.
+FROM python:3.13-alpine AS builder
 
-# Create non-root user for security
-RUN addgroup -g 1000 appuser && adduser -D -u 1000 -G appuser appuser
+# gcc + musl-dev compile C extensions pulled in by cryptography/cffi.
+# libffi-dev is required by cffi itself.
+RUN apk add --no-cache gcc musl-dev libffi-dev
 
-# Setup Python virtual environment
 RUN python -m venv /opt/venv
-ENV PATH="/opt/venv/bin:$PATH" PIP_NO_CACHE_DIR=off
+ENV PATH="/opt/venv/bin:$PATH"
 
-# Copy requirements first (for better layer caching)
 COPY requirements.txt .
+RUN pip install --no-cache-dir --upgrade pip \
+ && pip install --no-cache-dir -r requirements.txt
 
-# Install dependencies
-RUN pip3 install --upgrade pip setuptools-rust wheel && \
-    pip3 install -r requirements.txt && \
-    rm -rf /root/.cache /root/.cargo
 
-# Create app directory and set permissions
+# ─── Stage 2: lean runtime image ─────────────────────────────────────────────
+# Only the pre-built venv is copied — no compiler, no pip cache, no build deps.
+FROM python:3.13-alpine AS final
+
+LABEL org.opencontainers.image.title="Synology SS → Telegram Bridge" \
+      org.opencontainers.image.description="Webhook bridge: Synology Surveillance Station motion events → Telegram video" \
+      org.opencontainers.image.source="https://github.com/admake/Synology-SS-video-to-Telegram-with-prerecording"
+
+# Non-root user — the app never needs to write outside /bot (volume mount).
+RUN addgroup -g 1000 appuser \
+ && adduser -D -u 1000 -G appuser appuser
+
+# Copy the venv from the builder stage.
+COPY --from=builder /opt/venv /opt/venv
+
+ENV PATH="/opt/venv/bin:$PATH" \
+    # Do not write .pyc files — the container is ephemeral.
+    PYTHONDONTWRITEBYTECODE=1 \
+    # Force unbuffered stdout/stderr so log lines appear immediately.
+    PYTHONUNBUFFERED=1 \
+    # Print a traceback on fatal signals (SIGSEGV, etc.) — aids debugging.
+    PYTHONFAULTHANDLER=1
+
 WORKDIR /app
-RUN chown -R appuser:appuser /app
 
-# Copy ALL source files — config.py and utils.py are required by main.py
+# Copy application source.  WORKDIR is already set, so paths are correct.
 COPY --chown=appuser:appuser src/ /app/
 
-# Switch to non-root user
 USER appuser
 
-# Expose port
 EXPOSE 7878
 
-# Health check — /health returns 200 for both GET and any method.
-# /webhookcam only accepts POST, so the old check always returned 405.
-HEALTHCHECK --interval=30s --timeout=10s --start-period=15s --retries=3 \
-    CMD wget --quiet --tries=1 --spider http://localhost:7878/health || exit 1
+# Health check uses Python's stdlib — no extra tools required.
+# Verifies that the /health endpoint returns HTTP 200 with status=ok.
+HEALTHCHECK --interval=30s --timeout=10s --start-period=20s --retries=3 \
+    CMD python3 -c "\
+import urllib.request, json, sys; \
+r = urllib.request.urlopen('http://localhost:7878/health', timeout=5); \
+sys.exit(0 if json.loads(r.read()).get('status') == 'ok' else 1)"
 
-# Run with a single sync worker.
-# Using >1 workers causes state inconsistency because arr_cam_move and
-# syno_sid are in-process globals — each worker would have its own copy.
+# gthread worker: OS-thread-per-request so Gunicorn can accept new webhooks
+# while background daemon-threads process previous motion events.
+# workers=1: in-process state (SID, cam tracking) must not be forked.
 CMD ["gunicorn", \
      "--bind", "0.0.0.0:7878", \
      "--workers", "1", \
-     "--worker-class", "sync", \
+     "--worker-class", "gthread", \
+     "--threads", "4", \
      "--timeout", "120", \
      "--access-logfile", "-", \
      "--error-logfile", "-", \
