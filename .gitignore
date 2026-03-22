@@ -136,3 +136,5 @@ Thumbs.db
 # Project specific
 *.env.local
 config/local/
+docker-compose.yaml
+.claude

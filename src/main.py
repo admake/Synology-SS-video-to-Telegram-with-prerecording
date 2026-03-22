@@ -76,8 +76,13 @@ log.info(f"Telegram bot initialised for chat {TELEGRAM_CHAT_ID}")
 _syno_sid: Optional[str] = None
 _syno_sid_lock = threading.Lock()
 
+# Serialises concurrent re-authentication attempts so that only one thread
+# re-auths at a time.  Other threads wait and then reuse the fresh SID.
+_syno_reauth_lock = threading.Lock()
+
 # Camera metadata:   cam_id (str) → {CamId, SynoName, IP, …}
 _cam_load: dict = {}
+_cam_load_lock = threading.RLock()   # protects _cam_load dict replacement
 
 # Per-camera motion state:  cam_id → {last_video_id, video_offset}
 _cam_state: dict = {}
@@ -137,7 +142,8 @@ def _send_video(video_path: str, cam_id: str) -> bool:
 
     Returns True on success.
     """
-    cam_name = _cam_load.get(cam_id, {}).get("SynoName", f"Camera {cam_id}")
+    with _cam_load_lock:
+        cam_name = _cam_load.get(cam_id, {}).get("SynoName", f"Camera {cam_id}")
     caption = f"Camera: {cam_name}"
 
     for attempt in range(3):
@@ -214,6 +220,11 @@ def _syno_authenticate() -> bool:
 
         code = body.get("error", {}).get("code", "?")
         log.error(f"Synology auth failed: error code {code}")
+        if SYNOLOGY_OTP:
+            log.error(
+                "OTP-based re-authentication failed — the TOTP code may have "
+                "rotated. Restart the container with a fresh SYNO_OTP value."
+            )
         return False
 
     except requests.RequestException as exc:
@@ -228,7 +239,9 @@ def _syno_api_get(params: dict, _retry: bool = True) -> Optional[dict]:
     """Make a Synology JSON API GET request, injecting the current SID.
 
     On session-expiry errors (codes 105, 106, 119), re-authenticates once
-    and retries automatically.
+    and retries automatically.  Concurrent re-auth attempts are serialised
+    by _syno_reauth_lock so only one thread re-auths; others reuse the
+    fresh SID.
     Returns the parsed response dict, or None on network / parse error.
     """
     with _syno_sid_lock:
@@ -256,8 +269,16 @@ def _syno_api_get(params: dict, _retry: bool = True) -> Optional[dict]:
                 log.warning(
                     f"Synology session invalid (code={code}), re-authenticating…"
                 )
-                if _syno_authenticate():
-                    return _syno_api_get(params, _retry=False)
+                with _syno_reauth_lock:
+                    # Another thread may have already refreshed the SID while
+                    # we waited on the lock — reuse it if so.
+                    with _syno_sid_lock:
+                        new_sid = _syno_sid
+                    if new_sid != current_sid:
+                        log.debug("SID was refreshed by another thread — retrying")
+                    elif not _syno_authenticate():
+                        return body
+                return _syno_api_get(params, _retry=False)
 
         return body
 
@@ -281,8 +302,6 @@ def _fetch_cameras() -> None:
     Exits the process if cameras cannot be fetched — the service has no
     purpose without a valid camera list.
     """
-    global _cam_load
-
     log.info("Fetching camera configuration from Synology…")
     body = _syno_api_get({
         "api": "SYNO.SurveillanceStation.Camera",
@@ -313,7 +332,9 @@ def _fetch_cameras() -> None:
         }
         summary += f"• [{cid}] {cam.get('newName', 'Unknown')}  {cam.get('ip', '')}\n"
 
-    _cam_load = cam_data
+    with _cam_load_lock:
+        global _cam_load
+        _cam_load = cam_data
 
     # Atomic write: tmp → final so readers never see a partial file.
     try:
@@ -333,7 +354,7 @@ def _init_cameras() -> None:
     """Load camera config from disk if valid; otherwise fetch from Synology.
     Initialises _cam_state tracking entries for every camera.
     """
-    global _cam_load, _cam_state
+    global _cam_load
 
     cfg_path = pathlib.Path(CONFIG_FILE)
     loaded = False
@@ -348,7 +369,8 @@ def _init_cameras() -> None:
                 if isinstance(v, dict) and "CamId" in v
             }
             if cam_data:
-                _cam_load = cam_data
+                with _cam_load_lock:
+                    _cam_load = cam_data
                 loaded = True
                 log.info(
                     f"Camera config loaded from disk: {len(_cam_load)} camera(s)"
@@ -360,15 +382,18 @@ def _init_cameras() -> None:
         log.info("No valid camera config on disk — fetching from Synology…")
         _fetch_cameras()
 
+    with _cam_load_lock:
+        cam_ids = list(_cam_load.keys())
+
     with _cam_state_lock:
         _cam_state.clear()
-        for cam_id in _cam_load:
+        for cam_id in cam_ids:
             _cam_state[cam_id] = {
                 "last_video_id": None,   # last seen recording ID (None = no event yet)
                 "video_offset": 0,       # next download offset in milliseconds
             }
 
-    log.info(f"Tracking {len(_cam_state)} camera(s): {list(_cam_load.keys())}")
+    log.info(f"Tracking {len(_cam_state)} camera(s): {cam_ids}")
 
 
 # ─── Module-level initialisation (runs when Gunicorn imports the module) ──────
@@ -423,6 +448,7 @@ def _download_video(
     so the consumer never reads a partial download.
 
     On session-expiry JSON responses, re-authenticates once and retries.
+    Concurrent re-auth attempts are serialised by _syno_reauth_lock.
     Returns True on success.
     """
     with _syno_sid_lock:
@@ -468,8 +494,15 @@ def _download_video(
                     f"Session expired during video download (code={code}), "
                     f"re-authenticating…"
                 )
-                if _syno_authenticate():
-                    return _download_video(video_id, offset_ms, dest_path, _retry=False)
+                with _syno_reauth_lock:
+                    with _syno_sid_lock:
+                        new_sid = _syno_sid
+                    if new_sid != current_sid:
+                        log.debug("SID was refreshed by another thread — retrying")
+                    elif not _syno_authenticate():
+                        log.error(f"Synology returned JSON error during download: {err}")
+                        return False
+                return _download_video(video_id, offset_ms, dest_path, _retry=False)
             log.error(f"Synology returned JSON error during download: {err}")
             return False
 
@@ -541,7 +574,8 @@ def _process_motion(cam_id: str) -> None:
         return
 
     try:
-        cam_name = _cam_load.get(cam_id, {}).get("SynoName", f"Camera {cam_id}")
+        with _cam_load_lock:
+            cam_name = _cam_load.get(cam_id, {}).get("SynoName", f"Camera {cam_id}")
         video_path = _cam_video_path(cam_id)
 
         log.info(
@@ -558,6 +592,12 @@ def _process_motion(cam_id: str) -> None:
             return
 
         with _cam_state_lock:
+            if cam_id not in _cam_state:
+                log.error(
+                    f"Camera {cam_id} not found in state tracking — "
+                    f"possible config reload race; skipping"
+                )
+                return
             state = _cam_state[cam_id]
             is_new = rec_id != state["last_video_id"]
             if is_new:
@@ -640,7 +680,15 @@ def webhookcam():
     # force=True: accept JSON even without Content-Type: application/json
     # silent=True: return None on parse error instead of raising 400
     body = flask_request.get_json(force=True, silent=True)
-    if not body or "idcam" not in body:
+    if body is None:
+        raw = flask_request.get_data(as_text=True)
+        log.warning(
+            f"Webhook: unparseable body from {flask_request.remote_addr}: "
+            f"{raw[:200]!r}"
+        )
+        return "Bad Request: invalid JSON", 400
+
+    if "idcam" not in body:
         log.warning("Webhook rejected: missing 'idcam' field")
         return "Bad Request: missing idcam", 400
 
@@ -651,7 +699,9 @@ def webhookcam():
         log.warning(f"Webhook rejected: invalid cam_id {cam_id!r}")
         return "Bad Request: invalid idcam", 400
 
-    if cam_id not in _cam_load:
+    with _cam_load_lock:
+        known = cam_id in _cam_load
+    if not known:
         log.warning(f"Webhook rejected: unknown camera {cam_id!r}")
         return f"Bad Request: unknown camera {cam_id}", 400
 
@@ -672,9 +722,11 @@ def health():
     """Health check endpoint — no authentication required."""
     with _syno_sid_lock:
         authenticated = _syno_sid is not None
+    with _cam_load_lock:
+        cam_count = len(_cam_load)
     return {
         "status": "ok",
-        "cameras": len(_cam_load),
+        "cameras": cam_count,
         "authenticated": authenticated,
         "timestamp": time.strftime("%Y-%m-%dT%H:%M:%S"),
     }, 200
