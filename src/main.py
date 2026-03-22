@@ -41,6 +41,7 @@ from config import (
     SYNOLOGY_PASSWORD,
     SYNOLOGY_URL,
     TELEGRAM_CHAT_ID,
+    TELEGRAM_PROXY,
     TELEGRAM_TOKEN,
     VIDEO_DOWNLOAD_TIMEOUT,
     VIDEO_FILE,
@@ -67,6 +68,10 @@ def _validate_env() -> None:
 _validate_env()
 
 # ─── Module-level singletons ─────────────────────────────────────────────────
+
+if TELEGRAM_PROXY:
+    telebot.apihelper.proxy = {"https": TELEGRAM_PROXY}
+    log.info(f"Telegram: using proxy {TELEGRAM_PROXY}")
 
 _tg_bot = telebot.TeleBot(TELEGRAM_TOKEN)
 log.info(f"Telegram bot initialised for chat {TELEGRAM_CHAT_ID}")

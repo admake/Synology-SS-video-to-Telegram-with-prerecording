@@ -89,3 +89,9 @@ VIDEO_DOWNLOAD_TIMEOUT: int = int(os.environ.get("VIDEO_DOWNLOAD_TIMEOUT", "90")
 # X-Webhook-Token request header (or ?token= query parameter).
 # Generate with: python3 -c "import secrets; print(secrets.token_hex(32))"
 WEBHOOK_SECRET: str = os.environ.get("WEBHOOK_SECRET", "")
+
+# ─── Proxy ───────────────────────────────────────────────────────────────────
+
+# Optional HTTP/SOCKS proxy for Telegram API calls.
+# Examples: "http://host:3128"  or  "socks5://user:pass@host:1080"
+TELEGRAM_PROXY: str = os.environ.get("TG_PROXY", "")
